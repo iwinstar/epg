@@ -1,0 +1,67 @@
+name: NHK BSP4K EPG
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 03:10 JST daily.
+    - cron: "10 18 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generate XMLTV
+        run: |
+          python scripts/fetch_nhk_bsp4k_epg.py \
+            --days 8 \
+            --output dist/nhk-bsp4k.xml \
+            --gzip-output dist/nhk-bsp4k.xml.gz
+
+      - name: Show output
+        run: |
+          ls -lh dist
+          python - <<'PY'
+          import gzip
+          import xml.etree.ElementTree as ET
+
+          xml_path = "dist/nhk-bsp4k.xml"
+          gz_path = "dist/nhk-bsp4k.xml.gz"
+          root = ET.parse(xml_path).getroot()
+          programmes = root.findall("programme")
+          print(f"programmes={len(programmes)}")
+          if not programmes:
+              raise SystemExit("No programmes generated")
+          with gzip.open(gz_path, "rb") as handle:
+              ET.fromstring(handle.read())
+          PY
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="nhk-bsp4k-latest"
+          TITLE="NHK BSP4K EPG Latest"
+          NOTES="Generated XMLTV EPG for NHK BSP4K from today through the next 8 days."
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES"
+          else
+            gh release create "$TAG" --title "$TITLE" --notes "$NOTES"
+          fi
+
+          gh release upload "$TAG" \
+            dist/nhk-bsp4k.xml \
+            dist/nhk-bsp4k.xml.gz \
+            --clobber
