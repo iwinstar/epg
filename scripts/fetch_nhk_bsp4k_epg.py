@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 
 BASE_URL = "https://bangumi.org/epg/bs4k?broad_cast_date={date}"
 CHANNEL_ID = "nhk-bsp4k.jp"
-CHANNEL_NAME = "ＮＨＫ ＢＳＰ４Ｋ"
+CHANNEL_NAME = "NHK BSP4K JP"
 CHANNEL_LINE_ID = "program_line_1"
 JST = ZoneInfo("Asia/Tokyo")
 BROADCAST_SYMBOL_RANGES = (
@@ -230,9 +230,9 @@ def date_range(start_date: str, days: int) -> list[str]:
 
 
 def main() -> int:
-    today_jst = datetime.now(JST).strftime("%Y%m%d")
+    yesterday_jst = (datetime.now(JST)-timedelta(1)).strftime("%Y%m%d")
     parser = argparse.ArgumentParser()
-    parser.add_argument("--start-date", default=today_jst, help="Start date in YYYYMMDD, defaults to today in JST.")
+    parser.add_argument("--start-date", default=yesterday_jst, help="Start date in YYYYMMDD, defaults to yesterday in JST.")
     parser.add_argument("--days", type=int, default=8, help="Number of days to fetch, defaults to 8.")
     parser.add_argument("--output", default="dist/nhk-bsp4k.xml", help="XMLTV output path.")
     parser.add_argument("--gzip-output", default="dist/nhk-bsp4k.xml.gz", help="Gzip output path.")
