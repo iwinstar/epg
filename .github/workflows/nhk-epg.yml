@@ -1,4 +1,4 @@
-name: NHK BSP4K EPG
+name: NHK EPG
 
 on:
   workflow_dispatch:
