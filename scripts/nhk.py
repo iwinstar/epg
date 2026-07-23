@@ -15,7 +15,7 @@ import logging
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 from xml.etree import ElementTree as ET
 from zoneinfo import ZoneInfo
@@ -47,6 +47,10 @@ OUTPUT_FILE = sys.argv[1] if len(sys.argv) > 1 else "nhk_epg.xml.gz"
 MAX_WORKERS = 8
 
 JST = ZoneInfo("Asia/Tokyo")
+
+NHK_WORLD_ID = "nhk-world.jp"
+NHK_WORLD_NAME = "NHK WORLD-JAPAN"
+NHK_WORLD_API_URL = "https://masterpl.hls.nhkworld.jp/epg/w/{date}.json"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -205,12 +209,30 @@ def make_programme(prog: dict, channel_id: str) -> ET.Element:
 
     return el
 
+def make_nhk_world_programme(prog: dict) -> ET.Element:
+    programme = ET.Element("programme", start=prog["start"], stop=prog["stop"], channel=NHK_WORLD_ID)
+    ET.SubElement(programme, "title", lang="en").text = prog["title"]
+
+    if prog["subtitle"]:
+        ET.SubElement(programme, "sub-title", lang="en").text = prog["subtitle"]
+
+    if prog["desc"]:
+        ET.SubElement(programme, "desc", lang="en").text = prog["desc"]
+
+    if prog["url"]:
+        ET.SubElement(programme, "url").text = prog["url"]
+
+    if prog["thumbnail"]:
+        ET.SubElement(programme, "icon", src=prog["thumbnail"])
+
+    return programme
 
 # ── XMLTV Writer ───────────────────────────────────────────────────────────────
 
 def write_xmltv(
     all_programs: dict[str, list],
     channel_icons: dict[str, str],
+    nhk_world_programs: list[dict],
     out_path: str,
 ) -> None:
     """
@@ -241,6 +263,11 @@ def write_xmltv(
         if icon_url := channel_icons.get(channel_id):
             ET.SubElement(ch_el, "icon", src=icon_url)
 
+    nhk_world_channel = ET.SubElement(root, "channel", id=NHK_WORLD_ID)
+    ET.SubElement(nhk_world_channel, "display-name", lang="en").text = NHK_WORLD_NAME
+    ET.SubElement(nhk_world_channel, "url").text = "https://www3.nhk.or.jp/nhkworld/"
+    ET.SubElement(nhk_world_channel, "icon", src="https://upload.wikimedia.org/wikipedia/commons/8/8d/NHK_World-Japan_TV.svg")
+
     # programme blocks: sort by startDate; deduplicate by broadcast event ID.
     # NHK returns early-morning programmes under the previous calendar date,
     # so cross-day duplicates with the same id are expected and filtered here.
@@ -258,6 +285,9 @@ def write_xmltv(
                 root.append(make_programme(prog, channel_id))
             except Exception as exc:
                 log.warning("Skipping programme %s: %s", prog_id or "?", exc)
+
+    for item in nhk_world_programs:
+        root.append(make_nhk_world_programme(item))
 
     ET.indent(root, space="  ")
     tree = ET.ElementTree(root)
@@ -298,6 +328,56 @@ def fetch_day(
         log.warning("  %-14s  %s  ERROR: %s", channel_id, date_str, exc)
     return [], None
 
+def fetch_nhk_world_schedule(days: int = DAYS) -> list[dict]:
+    programmes = []
+
+    today = date.today()
+
+    for offset in range(days):
+        current = today + timedelta(days=offset)
+
+        url = NHK_WORLD_API_URL.format(
+            date=current.strftime("%Y%m%d")
+        )
+
+        print(f"Downloading {url}")
+
+        kwargs = dict(timeout=30)
+        response = requests.get(url, impersonate="chrome", **kwargs)
+        response.raise_for_status()
+
+        data = response.json().get("data", [])
+
+        for item in data:
+
+            if item.get("extractProgram") == 1:
+                if programmes:
+                    programmes[-1]["stop"] = xmltv_dt(item["endTime"])
+                continue
+
+            programme = {
+                "start": xmltv_dt(item["startTime"]),
+                "stop": xmltv_dt(item["endTime"]),
+                "title": item.get("title", "").strip(),
+                "subtitle": item.get("episodeTitle", "").strip(),
+                "desc": item.get("description", "").strip(),
+                "thumbnail": (
+                    item.get("episodeThumbnailURL")
+                    or item.get("thumbnail")
+                    or ""
+                ),
+                "url": (
+                    item.get("episodeLink")
+                    or item.get("link")
+                    or ""
+                ),
+            }
+
+            programmes.append(programme)
+
+    print(f"Loaded {len(programmes)} programmes.")
+
+    return programmes
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
@@ -344,7 +424,9 @@ def main() -> None:
     log.info("Programmes collected : %d", total)
     log.info("Writing %s ...", OUTPUT_FILE)
 
-    write_xmltv(all_programs, channel_icons, OUTPUT_FILE)
+    nhk_world_programs = fetch_nhk_world_schedule(DAYS)
+
+    write_xmltv(all_programs, channel_icons, nhk_world_programs, OUTPUT_FILE)
 
     compressed_kb = os.path.getsize(OUTPUT_FILE) / 1024
     log.info("Done. Compressed size: %.1f KB  →  %s", compressed_kb, OUTPUT_FILE)
